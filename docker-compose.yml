@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  crawler:
+    build: .
+    command: xue -u https://example.com --db /data/xue.db --log-file /data/crawl.log
+    volumes:
+      - xue-data:/data
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: uvicorn xue.api.app:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - xue-data:/data
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  xue-data:
