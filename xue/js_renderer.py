@@ -1,4 +1,5 @@
 import threading
+from typing import Any
 
 try:
     from playwright.sync_api import sync_playwright
@@ -9,9 +10,9 @@ except ImportError:
 
 class JsRenderer:
     def __init__(self, threads: int = 5):
-        self._playwright = None
-        self._browser = None
-        self._contexts = []
+        self._playwright: Any = None
+        self._browser: Any = None
+        self._contexts: list[Any] = []
         self._context_idx = 0
         self._lock = threading.Lock()
 
@@ -41,6 +42,11 @@ class JsRenderer:
             return html, 200, "text/html"
         except Exception:
             return None, None, None
+
+    @property
+    def context_count(self) -> int:
+        with self._lock:
+            return len(self._contexts)
 
     def stop(self) -> None:
         for ctx in self._contexts:
