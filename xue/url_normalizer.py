@@ -24,7 +24,6 @@ def normalize_url(url: str, strip_www: bool = True, lower_case: bool = True,
     query = parsed.query
     if sort_query and query:
         qs = parse_qsl(query, keep_blank_values=True)
-        qs = [(k, v) for k, v in qs]
         qs.sort(key=lambda x: x[0])
         query = urlencode(qs)
 
