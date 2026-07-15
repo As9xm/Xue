@@ -4,7 +4,7 @@ import threading
 
 class DataHarvester:
     EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
-    PHONE_RE = re.compile(r'\+?[0-9]{1,4}?[-.\s]?\(?[0-9]{1,3}?\)?[-.\s]?[0-9]{1,4}[-.\s]?[0-9]{1,4}[-.\s]?[0-9]{1,9}')
+    PHONE_RE = re.compile(r'\b\+?[1-9]\d{0,2}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}\b')
     SOCIAL_PATTERNS = {
         "Twitter": re.compile(r'twitter\.com/([A-Za-z0-9_]{1,15})'),
         "GitHub": re.compile(r'github\.com/([A-Za-z0-9_-]{1,39})'),
