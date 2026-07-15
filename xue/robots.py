@@ -35,6 +35,8 @@ class RobotsManager:
             entry = self._cache.get(domain)
             if entry and (time.time() - entry["fetched_at"]) < self.ttl_secs:
                 return entry["parser"].can_fetch("*", url)
-            rp = self._fetch_rules(url)
-            self._cache[domain] = {"parser": rp, "fetched_at": time.time()}
-            return rp.can_fetch("*", url)
+        rp = self._fetch_rules(url)
+        with self._lock:
+            if domain not in self._cache:
+                self._cache[domain] = {"parser": rp, "fetched_at": time.time()}
+            return self._cache[domain]["parser"].can_fetch("*", url)
