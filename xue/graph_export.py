@@ -23,12 +23,18 @@ class GraphExporter:
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2)
 
+    def _dot_escape(self, s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+
+    def _xml_escape(self, s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
+
     def export_dot(self, filepath):
         with self._lock:
             lines = ["digraph XueCrawl {", '  rankdir=LR;', '  node [shape=box, fontsize=8];']
             for s, t in self.edges:
-                src = s.replace('"', '\\"')[:80]
-                tgt = t.replace('"', '\\"')[:80]
+                src = self._dot_escape(s)[:80]
+                tgt = self._dot_escape(t)[:80]
                 lines.append(f'  "{src}" -> "{tgt}";')
             lines.append("}")
         with open(filepath, "w") as f:
@@ -42,7 +48,7 @@ class GraphExporter:
                      '  <graph defaultedgetype="directed">',
                      '    <nodes>']
             for node, nid in node_ids.items():
-                label = node[:80].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                label = self._xml_escape(node)[:80]
                 lines.append(f'      <node id="{nid}" label="{label}" />')
             lines.append('    </nodes>')
             lines.append('    <edges>')
