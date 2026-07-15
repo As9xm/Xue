@@ -24,6 +24,7 @@ from xue.aggregator import Aggregator
 from xue.ansi import BANNER, C
 from xue.api_crawl import ApiCrawler
 from xue.budget import CrawlBudget
+from xue.checkpoint import Checkpoint
 from xue.config import CrawlerConfig
 from xue.content_extractor import extract_text
 from xue.fingerprint import FingerprintDedup
@@ -85,6 +86,9 @@ class XueCrawler:
         self.stop_event = threading.Event()
         self.total_discovered = 0
         self.stats_lock = threading.Lock()
+        self._checkpoint_in_progress = False
+        self._retry_counts: dict[str, int] = {}
+        self._retry_lock = threading.Lock()
         self.aggregator = Aggregator()
         self.clearnet_session = self._build_session(proxy=None)
         self.tor_session = self._build_session(proxy=self.config.tor_proxy)
@@ -105,7 +109,7 @@ class XueCrawler:
             try:
                 self._js_renderer = JsRenderer()
                 self._js_renderer.start(self.config.threads)
-                print(f"  {C.GREEN}[+]{C.RST} Playwright browser cluster: {len(self._js_renderer._contexts)} contexts")
+                print(f"  {C.GREEN}[+]{C.RST} Playwright browser cluster: {self._js_renderer.context_count} contexts")
             except Exception as e:
                 print(f"  {C.RED}[!]{C.RST} Failed to initialize Playwright: {e}")
                 self.config.js_render = False
@@ -179,7 +183,7 @@ class XueCrawler:
         return headers
 
     def _is_onion(self, url):
-        return ".onion" in urlparse(url).netloc
+        return urlparse(url).netloc.endswith(".onion")
 
     def _get_session(self, url):
         return self.tor_session if self._is_onion(url) else self.clearnet_session
@@ -203,7 +207,7 @@ class XueCrawler:
                 sort_query=self.config.sort_query_params,
             )
         url, _ = urldefrag(url)
-        if url.endswith("/") and url.count("/") > 3:
+        if url.endswith("/") and url.count("/") > 2:
             url = url.rstrip("/")
         return url
 
@@ -254,8 +258,10 @@ class XueCrawler:
                 full_url = self._normalize_url(full_url)
                 if not self._should_skip(full_url):
                     links.add(full_url)
-        except Exception:
-            pass
+        except Exception as e:
+            if self.config.verbose:
+                with self._print_lock:
+                    print(f"  {C.DIM}[PARSE]{C.RST} Failed to parse HTML: {e}")
         return links, title
 
     def _log_url(self, url, status_code, links_count, depth, is_onion):
@@ -299,27 +305,38 @@ class XueCrawler:
                 self._log_fh.write(log_entry + "\n")
 
     def _save_checkpoint(self):
-        from xue.checkpoint import Checkpoint
-        with self.visited_lock:
-            visited_list = list(self.visited)
-        with self.queue_lock:
-            queue_list = list(self.queue)
-        with self.discovered_domains_lock:
-            domains_list = list(self.discovered_domains)
-        with self.stats_lock:
-            total = self.total_discovered
-        cp = Checkpoint(
-            seed_url=self.config.seed_url,
-            visited=visited_list,
-            queue=[(u, d) for u, d in queue_list],
-            discovered_domains=domains_list,
-            total_discovered=total,
-            timestamp=datetime.utcnow().isoformat(),
-        )
+        if self._checkpoint_in_progress:
+            return
+        self._checkpoint_in_progress = True
         try:
-            cp.save("xue_checkpoint.json")
-        except Exception as e:
-            print(f"\n  {C.RED}[!]{C.RST} Failed to save checkpoint: {e}")
+            self.visited_lock.acquire()
+            self.queue_lock.acquire()
+            self.discovered_domains_lock.acquire()
+            self.stats_lock.acquire()
+            try:
+                visited_list = list(self.visited)
+                queue_list = list(self.queue)
+                domains_list = list(self.discovered_domains)
+                total = self.total_discovered
+            finally:
+                self.stats_lock.release()
+                self.discovered_domains_lock.release()
+                self.queue_lock.release()
+                self.visited_lock.release()
+            cp = Checkpoint(
+                seed_url=self.config.seed_url,
+                visited=visited_list,
+                queue=[(u, d) for u, d in queue_list],
+                discovered_domains=domains_list,
+                total_discovered=total,
+                timestamp=datetime.utcnow().isoformat(),
+            )
+            try:
+                cp.save("xue_checkpoint.json")
+            except Exception as e:
+                print(f"\n  {C.RED}[!]{C.RST} Failed to save checkpoint: {e}")
+        finally:
+            self._checkpoint_in_progress = False
 
     def _crawl_url(self, url, depth):
         if self.stop_event.is_set():
@@ -366,48 +383,65 @@ class XueCrawler:
 
             if html is None:
                 req_session = session
+                close_session = False
                 if proxy:
                     req_session = self._build_session(proxy=proxy)
+                    close_session = True
 
-                resp = req_session.get(url, timeout=self.config.timeout, allow_redirects=True,
-                                       verify=False, stream=True,
-                                       headers=self._random_headers(url))
-                status_code = resp.status_code
-                content_type = resp.headers.get("Content-Type", "")
-                response_headers = dict(resp.headers)
+                resp = None
+                try:
+                    resp = req_session.get(url, timeout=self.config.timeout, allow_redirects=True,
+                                           verify=False, stream=True,
+                                           headers=self._random_headers(url))
+                    status_code = resp.status_code
+                    content_type = resp.headers.get("Content-Type", "")
+                    response_headers = dict(resp.headers)
 
-                if self._proxy_pool and status_code >= 400:
-                    self._proxy_pool.mark_bad(proxy)
+                    if self._proxy_pool and status_code >= 400:
+                        self._proxy_pool.mark_bad(proxy)
 
-                if not self._matches_content_type(content_type):
-                    resp.close()
-                    return
-
-                if status_code in (429, 503):
-                    retry_after = resp.headers.get("Retry-After")
-                    if retry_after:
-                        wait_secs = int(retry_after) if retry_after.isdigit() else 5
-                        if self.config.verbose:
-                            with self._print_lock:
-                                print(f"  {C.YELLOW}[WAIT]{C.RST} Retry-After: {wait_secs}s for {url[:80]}")
-                        self.aggregator.record_retry_after()
-                        time.sleep(wait_secs)
-                        with self.queue_lock:
-                            self.queue.append((url, depth))
+                    if not self._matches_content_type(content_type):
                         return
 
-                if "text/html" in content_type:
-                    content = resp.content[:10 * 1024 * 1024]
-                    size_bytes = len(content)
-                    try:
+                    if status_code in (429, 503):
+                        retry_after = resp.headers.get("Retry-After")
+                        if retry_after:
+                            with self._retry_lock:
+                                retry_count = self._retry_counts.get(url, 0) + 1
+                                self._retry_counts[url] = retry_count
+                            if retry_count > 3:
+                                if self.config.verbose:
+                                    with self._print_lock:
+                                        print(f"  {C.RED}[DROP]{C.RST} Max retries exceeded: {url[:80]}")
+                                return
+                            wait_secs = int(retry_after) if retry_after.isdigit() else 5
+                            if self.config.verbose:
+                                with self._print_lock:
+                                    print(f"  {C.YELLOW}[WAIT]{C.RST} Retry-After: {wait_secs}s for {url[:80]}")
+                            self.aggregator.record_retry_after()
+                            time.sleep(wait_secs)
+                            with self.queue_lock:
+                                self.queue.append((url, depth))
+                            return
+
+                    if "text/html" in content_type:
+                        content = resp.content[:10 * 1024 * 1024]
+                        size_bytes = len(content)
                         text = content.decode(resp.encoding or "utf-8", errors="replace")
-                    except Exception:
-                        text = content.decode("utf-8", errors="replace")
-                    links, title = self._extract_links_and_title(text, url)
-                    html = text
-                else:
-                    size_bytes = int(resp.headers.get("Content-Length", 0))
-                    resp.close()
+                        if not self.config.domains_only:
+                            links, title = self._extract_links_and_title(text, url)
+                        html = text
+                    else:
+                        raw_cl = resp.headers.get("Content-Length", "0")
+                        try:
+                            size_bytes = int(raw_cl)
+                        except (ValueError, TypeError):
+                            size_bytes = 0
+                finally:
+                    if resp is not None:
+                        resp.close()
+                    if close_session:
+                        req_session.close()
 
             if html is not None and self.config.domains_only and "text/html" in content_type:
                 links, title = self._extract_links_and_title(html, url)
@@ -692,7 +726,6 @@ class XueCrawler:
         resumed = False
         if self.config.resume_checkpoint and os.path.exists(self.config.resume_checkpoint):
             try:
-                from xue.checkpoint import Checkpoint
                 cp = Checkpoint.load(self.config.resume_checkpoint)
                 with self.visited_lock:
                     self.visited.update(cp.visited)
@@ -733,9 +766,6 @@ class XueCrawler:
         def signal_handler(sig, frame):
             print(f"\n\n  {C.YELLOW}[!]{C.RST} CTRL+C received — stopping crawler...\n")
             self.stop_event.set()
-            self._save_checkpoint()
-            if sqlite_store:
-                sqlite_store.close()
 
         signal.signal(signal.SIGINT, signal_handler)
 
@@ -746,7 +776,10 @@ class XueCrawler:
                     time.sleep(0.5)
             except KeyboardInterrupt:
                 self.stop_event.set()
+            finally:
                 self._save_checkpoint()
+                if sqlite_store:
+                    sqlite_store.close()
             for f in futures:
                 try:
                     f.result(timeout=3)
