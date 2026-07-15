@@ -1,4 +1,5 @@
 import collections
+import heapq
 import json
 import threading
 import time
@@ -53,14 +54,14 @@ class Aggregator:
             self.content_types[ct] += 1
             self.total_links_found += links_found
             self.total_size_bytes += size_bytes
-            if ".onion" in domain:
+            if domain.endswith(".onion"):
                 self.onion_count += 1
             else:
                 self.clearnet_count += 1
-            self.largest_pages.append((url, size_bytes))
-            if len(self.largest_pages) > 20:
-                self.largest_pages.sort(key=lambda x: x[1], reverse=True)
-                self.largest_pages = self.largest_pages[:10]
+            if len(self.largest_pages) < 10:
+                heapq.heappush(self.largest_pages, (size_bytes, url))
+            else:
+                heapq.heappushpop(self.largest_pages, (size_bytes, url))
             if status_code >= 400:
                 self.broken_links.append({"url": url, "status": status_code, "source": ""})
                 if len(self.broken_links) > 500:
@@ -166,7 +167,7 @@ class Aggregator:
                 "content_type_distribution": dict(self.content_types.most_common()),
                 "error_distribution": dict(self.errors.most_common()),
                 "top_error_urls": list(self.error_urls)[-20:],
-                "largest_pages": sorted(self.largest_pages, key=lambda x: x[1], reverse=True)[:10],
+                "largest_pages": sorted(self.largest_pages, key=lambda x: x[0], reverse=True),
                 "broken_links": self.broken_links[-50:],
             }
 
@@ -210,7 +211,7 @@ class Aggregator:
         if report["top_domains"]:
             print(f"\n  {C.BOLD}Top Domains (by pages){C.RST}")
             for i, (domain, count) in enumerate(report["top_domains"][:15], 1):
-                marker = f"{C.MAGENTA}[TOR]{C.RST} " if ".onion" in domain else ""
+                marker = f"{C.MAGENTA}[TOR]{C.RST} " if domain.endswith(".onion") else ""
                 print(f"    {C.DIM}{i:>3}.{C.RST} {marker}{domain} — {C.CYAN}{count}{C.RST} pages")
         if report["domains_by_category"]:
             print(f"\n  {C.BOLD}Domains by Category{C.RST}")
@@ -243,7 +244,7 @@ class Aggregator:
                 print(f"    {C.RED}{bl['status']}{C.RST} {bl['url'][:80]}")
         if report["largest_pages"]:
             print(f"\n  {C.BOLD}Largest Pages{C.RST}")
-            for url, size in report["largest_pages"][:5]:
+            for size, url in report["largest_pages"][:5]:
                 size_kb = size / 1024 if size else 0
                 print(f"    {C.DIM}•{C.RST} {size_kb:.1f} KB — {url[:80]}")
         print(f"\n{'='*60}\n")
