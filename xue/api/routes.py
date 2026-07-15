@@ -2,9 +2,11 @@
 
 from fastapi import APIRouter
 
+from xue import VERSION
+
 router = APIRouter(prefix="/api/v1", tags=["crawls"])
 
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "version": "4.0.0"}
+    return {"status": "ok", "version": VERSION}
