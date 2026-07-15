@@ -1,6 +1,6 @@
-# Xue v4.0
+# Xue
 
-Continuous internet crawler with Tor support, built-in aggregator, domain categorization, secrets detection, data harvesting, and enterprise-grade features.
+Continuous internet crawler with Tor support, built-in aggregator, domain categorization, secrets detection, and data harvesting.
 
 Takes a seed URL, follows every link it finds, and keeps crawling until you hit CTRL+C. When you stop it, it prints a full aggregation report — domains visited, status code distribution, content types, domain categories, errors, largest pages, and more.
 
@@ -65,6 +65,13 @@ python -m xue -u <URL> [options]
 | `--api-mode` | Detect and report API endpoints | off |
 | `--redis` | Redis URL for distributed crawl queue | — |
 | `--plugins` | Directory containing plugin `.py` files | — |
+| `--strategy` | Crawl order: `bfs`, `dfs`, `priority` | `bfs` |
+| `--max-pages-per-domain` | Max pages per domain (0 = unlimited) | 0 |
+| `--max-time-per-domain` | Max seconds per domain (0 = unlimited) | 0 |
+| `--max-size-per-domain` | Max bytes per domain (0 = unlimited) | 0 |
+| `--tech-fingerprint` | Detect CMS/framework technologies | off |
+| `--extract-content` | Extract clean article text from pages | off |
+| `--seo` | Analyze SEO meta tags and heading structure | off |
 
 ### Examples
 
@@ -86,29 +93,39 @@ xue -u https://example.com --redis redis://localhost:6379
 - **Domain categorization** — 16 categories based on domain name + page title
 - **System profiler + auto-threads** — CPU/RAM-aware thread count recommendation
 
+### Crawl Order
+- **BFS, DFS, or priority** — `--strategy` picks the queue discipline
+- **Priority mode** — biases toward domains with fewer pages fetched so far
+
 ### Politeness
 - **robots.txt** — Fetches and respects rules per domain with TTL cache
 - **Per-domain rate limiting** — Tracks last-request-time per domain
 - **Retry-After** — Backs off and re-enqueues on 429/503 with `Retry-After` header
+- **Crawl budget** — Per-domain caps on pages, seconds, or bytes downloaded
+
+### URL Handling
+- **Normalization** — Lowercases scheme/host, strips `www.`, sorts query params, removes fragment
+- **Scope filtering** — `--scope example.com` restricts to matching domains
+- **Denylist** — `--exclude` regex patterns (repeatable)
+- **Content-type filtering** — `--content-types` MIME whitelist
 
 ### Resumability
 - **Checkpoints** — Auto-saves on CTRL+C and every N pages. Resume with `--resume`
 - **SQLite backend** — Persistent visited set + queue via `--db xue.db`
 
-### Crawl Quality
-- **URL scope** — `--scope example.com` restricts to specific domains
-- **URL denylist** — `--exclude` regex patterns (repeatable)
-- **Content-type filtering** — `--content-types` MIME whitelist
-- **Sitemap discovery** — Auto-discovers `/sitemap.xml`
-
-### Advanced
-- **Proxy rotation pool** — Load proxies from file/API, rotate per-request with health tracking
-- **SimHash dedup** — Near-duplicate page detection via 64-bit SimHash
+### Analysis
+- **Tech fingerprinting** — Detects 22+ CMS/frameworks (WordPress, React, Django, etc.) from HTML + headers
+- **Content extraction** — Strips markup and extracts clean article text with word/char counts
+- **SEO audit** — Reports title length, meta description, h1 structure, alt text, canonical, OG/Twitter tags
+- **API detection** — Identifies JSON API endpoints and pagination patterns
 - **Secret detection** — Scans HTML for AWS keys, GitHub tokens, Stripe keys, JWTs
 - **Data harvesting** — Extracts emails, phone numbers, social media handles
-- **Wayback Machine** — Lookup archived versions of 404 pages
+- **Wayback Machine** — Looks up archived versions of 404 pages
+
+### Advanced
+- **Proxy rotation** — Load proxies from file/API, rotate per-request with health tracking
+- **SimHash dedup** — Near-duplicate page detection via 64-bit SimHash
 - **Adaptive delay** — Auto-tunes request delay based on real-time error rate
-- **API detection** — Identifies JSON API endpoints and pagination patterns
 - **Graph export** — Full crawl graph as JSON, DOT (Graphviz), GEXF (Gephi)
 - **Redis queue** — Distributed crawl queue for multi-instance crawls
 - **Plugin system** — Hook into crawl events via Python plugins
@@ -123,36 +140,39 @@ ruff check xue/
 mypy xue/
 ```
 
-## REST API (Coming in v4.1)
-
-Xue will expose a FastAPI-based REST API and Web UI for managing crawls remotely.
-
 ## Project Structure
 
 ```
 xue/
-├── __init__.py        # Package init
-├── __main__.py        # Entry point
-├── cli.py             # CLI (argparse)
-├── config.py          # CrawlerConfig dataclass
-├── crawler.py         # Main crawl engine
-├── aggregator.py      # Stats collection + reporting
-├── profiler.py        # System profiler
-├── classifier.py      # Domain categorization
-├── robots.py          # robots.txt manager
-├── sqlite_store.py    # SQLite persistence
-├── sitemap.py         # Sitemap parsing
-├── proxy_pool.py      # Proxy rotation
-├── fingerprint.py     # SimHash dedup
-├── secret_detector.py # Secret scanning
-├── harvester.py       # Data harvesting
-├── wayback.py         # Wayback Machine lookup
-├── api_crawl.py       # API detection
-├── graph_export.py    # Graph export
-├── adaptive_delay.py  # Auto-tuning delay
-├── plugin.py          # Plugin system
-├── redis_queue.py     # Redis queue
-├── js_renderer.py     # Playwright JS renderer
-├── models.py          # Pydantic models
-└── api/               # FastAPI routes (WIP)
+├── __init__.py           # Package init, version
+├── __main__.py           # Entry point
+├── cli.py                # CLI (argparse)
+├── config.py             # CrawlerConfig dataclass
+├── crawler.py            # Main crawl engine
+├── aggregator.py         # Stats collection + reporting
+├── profiler.py           # System profiler
+├── classifier.py         # Domain categorization
+├── robots.py             # robots.txt manager
+├── sqlite_store.py       # SQLite persistence
+├── sitemap.py            # Sitemap parsing
+├── proxy_pool.py         # Proxy rotation
+├── fingerprint.py        # SimHash dedup
+├── secret_detector.py    # Secret scanning
+├── harvester.py          # Data harvesting
+├── wayback.py            # Wayback Machine lookup
+├── api_crawl.py          # API endpoint detection
+├── graph_export.py       # Graph export
+├── adaptive_delay.py     # Auto-tuning delay
+├── plugin.py             # Plugin system
+├── redis_queue.py        # Redis queue
+├── js_renderer.py        # Playwright JS renderer
+├── models.py             # Pydantic models
+├── url_normalizer.py     # URL canonicalization
+├── budget.py             # Per-domain crawl budget
+├── tech_fingerprint.py   # CMS/framework detection
+├── content_extractor.py  # Article text extraction
+├── seo_analyzer.py       # SEO meta analysis
+└── api/                  # FastAPI routes
+    ├── __init__.py
+    └── routes.py
 ```
